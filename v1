@@ -1,0 +1,258 @@
+# This Sample Code is provided for the purpose of illustration only and is not intended to be used
+# in a production environment. THIS SAMPLE CODE AND ANY RELATED INFORMATION ARE PROVIDED "AS IS"
+# WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR PURPOSE. We grant You a nonexclusive,
+# royalty-free right to use and modify the Sample Code and to reproduce and distribute the object code
+# form of the Sample Code, provided that You agree: (i) to not use Our name, logo, or trademarks to
+# market Your software product in which the Sample Code is embedded; (ii) to include a valid copyright
+# notice on Your software product in which the Sample Code is embedded; and (iii) to indemnify, hold
+# harmless, and defend Us and Our suppliers from and against any claims or lawsuits, including attorneys’
+# fees, that arise or result from the use or distribution of the Sample Code.
+ 
+# This sample script is not supported under any Microsoft standard support program or service.
+# The sample script is provided AS IS without warranty of any kind. Microsoft further disclaims
+# all implied warranties including, without limitation, any implied warranties of merchantability
+# or of fitness for a particular purpose. The entire risk arising out of the use or performance of
+# the sample scripts and documentation remains with you. In no event shall Microsoft, its authors,
+# or anyone else involved in the creation, production, or delivery of the scripts be liable for any
+# damages whatsoever (including, without limitation, damages for loss of business profits, business
+# interruption, loss of business information, or other pecuniary loss) arising out of the use of or
+# inability to use the sample scripts or documentation, even if Microsoft has been advised of the possibility of such damages.
+
+
+#Requires -Modules ActiveDirectory
+
+Clear-Host
+
+Write-Host ""
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host " Windows Server Lifecycle Audit Tool" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host ""
+
+# Output Folder
+$ExportFolder = Read-Host "Enter export folder path"
+
+if (-not (Test-Path $ExportFolder))
+{
+New-Item -Path $ExportFolder -ItemType Directory -Force | Out-Null
+}
+
+Write-Host ""
+Write-Host "Select export format:"
+Write-Host "1 - CSV"
+Write-Host "2 - Excel (XLSX)"
+Write-Host ""
+
+$Choice = Read-Host "Choice"
+
+$DateStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+$CsvFile = Join-Path $ExportFolder "ServerAudit_$DateStamp.csv"
+$XlsxFile = Join-Path $ExportFolder "ServerAudit_$DateStamp.xlsx"
+
+Write-Host ""
+Write-Host "Gathering server inventory from Active Directory..." -ForegroundColor Yellow
+Write-Host ""
+
+try
+{
+$Servers = Get-ADComputer `
+-Filter "OperatingSystem -like '*Server*'" `
+-Properties OperatingSystem |
+Sort-Object Name
+}
+catch
+{
+Write-Host "Unable to query Active Directory." -ForegroundColor Red
+Write-Host $_.Exception.Message
+return
+}
+
+if (!$Servers)
+{
+Write-Warning "No Windows Server objects found."
+return
+}
+
+$Results = @()
+
+$TotalServers = $Servers.Count
+$Counter = 0
+
+foreach ($Server in $Servers)
+{
+$Counter++
+
+$PercentComplete = [Math]::Round(
+(($Counter / $TotalServers) * 100),0
+)
+
+Write-Progress `
+-Activity "Auditing Servers" `
+-Status "$Counter of $TotalServers complete" `
+-PercentComplete $PercentComplete
+
+$ServerName = $Server.Name
+
+if (-not (Test-Connection -ComputerName $ServerName -Count 1 -Quiet))
+{
+$Results += [PSCustomObject]@{
+ServerName = $ServerName
+Reachable = "No"
+OperatingSystem = $Server.OperatingSystem
+BuildNumber = ""
+InstallDate = ""
+YearsInService = ""
+LastBootTime = ""
+ServerType = ""
+Manufacturer = ""
+Model = ""
+BIOSDate = ""
+}
+
+continue
+}
+
+try
+{
+$OS = Get-CimInstance `
+Win32_OperatingSystem `
+-ComputerName $ServerName `
+-ErrorAction Stop
+
+$CS = Get-CimInstance `
+Win32_ComputerSystem `
+-ComputerName $ServerName `
+-ErrorAction Stop
+
+$BIOS = Get-CimInstance `
+Win32_BIOS `
+-ComputerName $ServerName `
+-ErrorAction Stop
+
+$InstallDate = $OS.InstallDate
+
+$YearsOld = [Math]::Round(
+(((Get-Date) - $InstallDate).Days / 365.25),
+2
+)
+
+$ServerType =
+if ($CS.Model -match "Virtual|VMware|Hyper-V|VirtualBox|KVM")
+{
+"Virtual"
+}
+else
+{
+"Physical"
+}
+
+$Results += [PSCustomObject]@{
+ServerName = $ServerName
+Reachable = "Yes"
+OperatingSystem = $OS.Caption
+BuildNumber = $OS.BuildNumber
+InstallDate = $InstallDate
+YearsInService = $YearsOld
+LastBootTime = $OS.LastBootUpTime
+ServerType = $ServerType
+Manufacturer = $CS.Manufacturer
+Model = $CS.Model
+BIOSDate = $BIOS.ReleaseDate
+}
+}
+catch
+{
+$Results += [PSCustomObject]@{
+ServerName = $ServerName
+Reachable = "Error"
+OperatingSystem = ""
+BuildNumber = ""
+InstallDate = ""
+YearsInService = ""
+LastBootTime = ""
+ServerType = ""
+Manufacturer = ""
+Model = ""
+BIOSDate = ""
+}
+}
+}
+
+Write-Progress -Activity "Auditing Servers" -Completed
+
+switch ($Choice)
+{
+"1"
+{
+$Results |
+Export-Csv `
+-Path $CsvFile `
+-NoTypeInformation `
+-Encoding UTF8
+
+Write-Host ""
+Write-Host "CSV report created:" -ForegroundColor Green
+Write-Host $CsvFile
+}
+
+"2"
+{
+if (-not (Get-Module -ListAvailable -Name ImportExcel))
+{
+Write-Host ""
+Write-Host "Installing ImportExcel module..." -ForegroundColor Yellow
+
+Install-Module `
+-Name ImportExcel `
+-Scope CurrentUser `
+-Force
+}
+
+Import-Module ImportExcel
+
+$Results |
+Export-Excel `
+-Path $XlsxFile `
+-WorksheetName "Server Audit" `
+-AutoSize `
+-FreezeTopRow `
+-BoldTopRow
+
+Write-Host ""
+Write-Host "Excel report created:" -ForegroundColor Green
+Write-Host $XlsxFile
+}
+
+Default
+{
+Write-Warning "Invalid export selection."
+return
+}
+}
+
+$OnlineCount = @($Results | Where-Object { $_.Reachable -eq "Yes" }).Count
+$OfflineCount = @($Results | Where-Object { $_.Reachable -eq "No" }).Count
+
+Write-Host ""
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "SUMMARY" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "Servers Found : $TotalServers"
+Write-Host "Online : $OnlineCount"
+Write-Host "Offline : $OfflineCount"
+Write-Host ""
+
+Write-Host "Oldest Servers:" -ForegroundColor Yellow
+
+$Results |
+Where-Object {$_.YearsInService -ne ""} |
+Sort-Object YearsInService -Descending |
+Select-Object -First 10 `
+ServerName,
+OperatingSystem,
+YearsInService,
+ServerType |
+Format-Table -AutoSize
+
