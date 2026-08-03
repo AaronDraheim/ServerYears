@@ -20,8 +20,10 @@
 # inability to use the sample scripts or documentation, even if Microsoft has been advised of the possibility of such damages.
 
 
+# Requires the ActiveDirectory module for Get-ADComputer.
 #Requires -Modules ActiveDirectory
 
+# Clear the console and display the tool banner.
 Clear-Host
 
 Write-Host ""
@@ -30,6 +32,7 @@ Write-Host " Windows Server Lifecycle Audit Tool" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Prompt for an export folder and create it when it does not exist.
 # Output Folder
 $ExportFolder = Read-Host "Enter export folder path"
 
@@ -38,6 +41,7 @@ if (-not (Test-Path $ExportFolder))
 New-Item -Path $ExportFolder -ItemType Directory -Force | Out-Null
 }
 
+# Prompt the operator to choose CSV or Excel output.
 Write-Host ""
 Write-Host "Select export format:"
 Write-Host "1 - CSV"
@@ -46,15 +50,18 @@ Write-Host ""
 
 $Choice = Read-Host "Choice"
 
+# Create timestamped output paths so existing reports are not overwritten.
 $DateStamp = Get-Date -Format "yyyyMMdd_HHmmss"
 
 $CsvFile = Join-Path $ExportFolder "ServerAudit_$DateStamp.csv"
 $XlsxFile = Join-Path $ExportFolder "ServerAudit_$DateStamp.xlsx"
 
+# Notify the operator that Active Directory discovery is starting.
 Write-Host ""
 Write-Host "Gathering server inventory from Active Directory..." -ForegroundColor Yellow
 Write-Host ""
 
+# Query Active Directory for computer objects whose operating system identifies them as Windows Server.
 try
 {
 $Servers = Get-ADComputer `
@@ -69,17 +76,20 @@ Write-Host $_.Exception.Message
 return
 }
 
+# Stop when the directory query returns no server objects.
 if (!$Servers)
 {
 Write-Warning "No Windows Server objects found."
 return
 }
 
+# Initialize the results collection and progress counters.
 $Results = @()
 
 $TotalServers = $Servers.Count
 $Counter = 0
 
+# Process each discovered server and update the progress indicator.
 foreach ($Server in $Servers)
 {
 $Counter++
@@ -93,8 +103,10 @@ Write-Progress `
 -Status "$Counter of $TotalServers complete" `
 -PercentComplete $PercentComplete
 
+# Store the current server name for connectivity and CIM queries.
 $ServerName = $Server.Name
 
+# Test basic network reachability; record unavailable servers without attempting remote inventory.
 if (-not (Test-Connection -ComputerName $ServerName -Count 1 -Quiet))
 {
 $Results += [PSCustomObject]@{
@@ -114,6 +126,7 @@ BIOSDate = ""
 continue
 }
 
+# Collect operating system, hardware, and BIOS details from reachable servers through CIM.
 try
 {
 $OS = Get-CimInstance `
@@ -131,6 +144,7 @@ Win32_BIOS `
 -ComputerName $ServerName `
 -ErrorAction Stop
 
+# Use the operating system installation date to estimate years in service.
 $InstallDate = $OS.InstallDate
 
 $YearsOld = [Math]::Round(
@@ -138,6 +152,7 @@ $YearsOld = [Math]::Round(
 2
 )
 
+# Classify the server as virtual or physical from its reported model.
 $ServerType =
 if ($CS.Model -match "Virtual|VMware|Hyper-V|VirtualBox|KVM")
 {
@@ -148,6 +163,7 @@ else
 "Physical"
 }
 
+# Add the successfully collected inventory data to the results collection.
 $Results += [PSCustomObject]@{
 ServerName = $ServerName
 Reachable = "Yes"
@@ -162,6 +178,7 @@ Model = $CS.Model
 BIOSDate = $BIOS.ReleaseDate
 }
 }
+# Record a collection error when a reachable server cannot return CIM data.
 catch
 {
 $Results += [PSCustomObject]@{
@@ -180,10 +197,13 @@ BIOSDate = ""
 }
 }
 
+# Close the progress display after all servers have been processed.
 Write-Progress -Activity "Auditing Servers" -Completed
 
+# Export the collected results in the format selected by the operator.
 switch ($Choice)
 {
+# Export option 1: create a UTF-8 CSV report.
 "1"
 {
 $Results |
@@ -197,6 +217,7 @@ Write-Host "CSV report created:" -ForegroundColor Green
 Write-Host $CsvFile
 }
 
+# Export option 2: ensure ImportExcel is available, then create a formatted XLSX report.
 "2"
 {
 if (-not (Get-Module -ListAvailable -Name ImportExcel))
@@ -225,6 +246,7 @@ Write-Host "Excel report created:" -ForegroundColor Green
 Write-Host $XlsxFile
 }
 
+# Reject any unsupported export selection.
 Default
 {
 Write-Warning "Invalid export selection."
@@ -232,9 +254,11 @@ return
 }
 }
 
+# Calculate online and offline totals; array wrapping keeps Count reliable under strict mode.
 $OnlineCount = @($Results | Where-Object { $_.Reachable -eq "Yes" }).Count
 $OfflineCount = @($Results | Where-Object { $_.Reachable -eq "No" }).Count
 
+# Display the overall audit summary.
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "SUMMARY" -ForegroundColor Cyan
@@ -244,6 +268,7 @@ Write-Host "Online : $OnlineCount"
 Write-Host "Offline : $OfflineCount"
 Write-Host ""
 
+# Display the ten servers with the greatest calculated years in service.
 Write-Host "Oldest Servers:" -ForegroundColor Yellow
 
 $Results |
